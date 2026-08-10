@@ -5,6 +5,8 @@ pidiendo de más, de menos, o se olvidaron de algo.
 
 **App en vivo:** https://barrio-pizza-ord-mora.streamlit.app
 
+**Video de demostración:** https://drive.google.com/drive/folders/1PJjStDNqEk-3VEMG04maw-ZWmg_MBdGk
+
 ---
 
 ## Qué problema resuelve
