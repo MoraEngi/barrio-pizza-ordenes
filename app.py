@@ -134,42 +134,62 @@ def grafico_comparativo(df, ingrediente_id, sucursal_activa):
     Sirve para ver de un golpe quien se sale del patron del grupo.
     """
     comp = df[(df.ingrediente_id == ingrediente_id) & df.cobertura.notna()].copy()
-    if comp.empty or len(comp) < 2:
+    if len(comp) < 2:
+        st.caption("Solo una sucursal maneja este ingrediente: no hay con que comparar.")
         return
-    comp["Sucursal"] = comp.sucursal
-    comp["Cobertura"] = comp.cobertura.clip(upper=5)   # recorta para que una
-    comp["real"] = comp.cobertura                      # sucursal extrema no
-    comp["Estado"] = comp.estado.map(ETIQUETA).fillna("OK")  # aplaste al resto
 
-    barras = alt.Chart(comp).mark_bar(size=30, cornerRadiusEnd=3).encode(
-        y=alt.Y("Sucursal:N", title=None, sort="-x",
-                axis=alt.Axis(labelFontSize=12)),
+    comp = comp.sort_values("cobertura", ascending=False)
+    comp["Sucursal"] = comp.sucursal
+    comp["Cobertura"] = comp.cobertura.clip(upper=4)   # recorta la barra para que
+    comp["real"] = comp.cobertura                      # una sucursal extrema no
+    comp["Estado"] = comp.estado.map(ETIQUETA).fillna("OK")  # aplaste al resto
+    # Un unico orden explicito para todas las capas: con sort="-x" en cada capa
+    # por separado, Vega las ordena distinto y los numeros caen sobre la barra
+    # equivocada.
+    orden_y = comp.Sucursal.tolist()
+
+    # Lectura del grafico. Se compara contra la mediana de las otras sucursales,
+    # que es lo que responde de verdad la pregunta "esta pidiendo raro?".
+    act = comp[comp.Sucursal == sucursal_activa]
+    otras = comp[comp.Sucursal != sucursal_activa].real
+    if not act.empty and len(otras):
+        mia, tipica = float(act.real.iloc[0]), float(otras.median())
+        desvio = (mia - tipica) / tipica if tipica else 0
+        if abs(desvio) < 0.25:
+            st.markdown(f"✅ **{sucursal_activa}** pide en linea con el resto de la red "
+                        f"({mia:,.2f} contra {tipica:,.2f} semanas tipicas).")
+        else:
+            lado = "por encima" if desvio > 0 else "por debajo"
+            st.markdown(f"🔍 **{sucursal_activa}** se sale del patron del grupo: "
+                        f"cubre **{mia:,.2f} semanas**, un **{abs(desvio)*100:.0f}% {lado}** "
+                        f"de las {tipica:,.2f} tipicas en las demas sucursales.")
+
+    eje_y = alt.Y("Sucursal:N", title=None, sort=orden_y,
+                  axis=alt.Axis(labelFontSize=12, labelLimit=180))
+
+    barras = alt.Chart(comp).mark_bar(cornerRadiusEnd=3, height=24).encode(
+        y=eje_y,
         x=alt.X("Cobertura:Q", title="Semanas de cobertura",
-                scale=alt.Scale(domainMin=0)),
-        color=alt.Color("Estado:N", scale=alt.Scale(
-            domain=["Olvido", "Riesgo de quiebre", "Sobre-pedido",
-                    "Dato incompleto", "Justo", "OK"],
-            range=[COLOR["OLVIDO"], COLOR["QUIEBRE"], COLOR["EXCESO"],
-                   COLOR["SIN_CATALOGO"], COLOR["AJUSTADO"], "#3E7A4E"]),
-            legend=alt.Legend(orient="top", title=None, direction="horizontal")),
+                scale=alt.Scale(domainMin=0, nice=True)),
+        color=alt.Color("Estado:N", scale=ESCALA_ESTADO, legend=None),
         opacity=alt.condition(alt.datum.Sucursal == sucursal_activa,
-                              alt.value(1.0), alt.value(0.45)),
+                              alt.value(1.0), alt.value(0.40)),
         tooltip=[alt.Tooltip("Sucursal:N"), alt.Tooltip("real:Q", title="Cobertura", format=",.2f"),
                  alt.Tooltip("Estado:N")],
     )
-    etiq = alt.Chart(comp).mark_text(dx=6, align="left", fontSize=11,
-                                     color="#9AA3AB").encode(
-        y=alt.Y("Sucursal:N", sort="-x"), x="Cobertura:Q",
-        text=alt.Text("real:Q", format=",.2f"))
+    etiq = alt.Chart(comp).mark_text(dx=7, align="left", fontSize=12,
+                                     color="#C9D1D9").encode(
+        y=eje_y, x="Cobertura:Q", text=alt.Text("real:Q", format=",.2f"))
 
     bandas = alt.Chart(pd.DataFrame({"x": [0.90, 1.25]})).mark_rule(
-        strokeDash=[4, 4], color="#7A7A7A", size=1).encode(x="x:Q")
+        strokeDash=[4, 4], color="#8B8B8B", size=1).encode(x="x:Q")
 
-    st.altair_chart((barras + etiq + bandas).properties(height=max(130, 42 * len(comp))),
+    st.altair_chart((barras + etiq + bandas).properties(height=46 * len(comp) + 30),
                     width="stretch")
-    st.caption("Cobertura = semanas que alcanza el stock mas el pedido. "
-               "Las lineas marcan el rango sano (0.90 a 1.25). La sucursal "
-               "seleccionada va resaltada; las demas, atenuadas.")
+    st.caption("Cobertura = semanas que alcanza el stock mas lo pedido. Las dos "
+               "lineas punteadas marcan el rango sano (0.90 a 1.25): a la izquierda "
+               "se queda corto, a la derecha sobra. La sucursal seleccionada va "
+               "resaltada y las demas atenuadas.")
 
 
 ESCALA_ESTADO = alt.Scale(
