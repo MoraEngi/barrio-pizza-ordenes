@@ -94,7 +94,10 @@ def grafico_serie(fila, hist):
 
     escala = alt.Scale(domain=["Historico", "Semana descartada", "Proyeccion"],
                        range=[AZUL, GRIS, NARANJA])
-    eje_x = alt.X("Semana:N", sort=alt.SortField("orden"), title=None,
+    # El orden va explicito como lista: con sort por campo Altair reordena
+    # alfabeticamente y "Proxima" termina antes que "Sem 1".
+    orden_x = [f"Sem {i+1}" for i in range(len(hist))] + ["Proxima"]
+    eje_x = alt.X("Semana:N", sort=orden_x, title=None,
                   axis=alt.Axis(labelAngle=0, labelFontSize=12))
 
     barras = alt.Chart(serie).mark_bar(size=42, cornerRadiusTopLeft=3,
@@ -121,6 +124,103 @@ def grafico_serie(fila, hist):
                     width="stretch")
     st.caption(f"Linea punteada = promedio simple ({fila.promedio_simple:,.1f} "
                f"{fila.unidad_base}), el metodo que estamos reemplazando.")
+
+
+def grafico_comparativo(df, ingrediente_id, sucursal_activa):
+    """Cobertura del mismo ingrediente en las 4 sucursales.
+
+    La cobertura es comparable entre sucursales aunque tengan tamanos muy
+    distintos, porque ya viene normalizada por el consumo propio de cada una.
+    Sirve para ver de un golpe quien se sale del patron del grupo.
+    """
+    comp = df[(df.ingrediente_id == ingrediente_id) & df.cobertura.notna()].copy()
+    if comp.empty or len(comp) < 2:
+        return
+    comp["Sucursal"] = comp.sucursal
+    comp["Cobertura"] = comp.cobertura.clip(upper=5)   # recorta para que una
+    comp["real"] = comp.cobertura                      # sucursal extrema no
+    comp["Estado"] = comp.estado.map(ETIQUETA).fillna("OK")  # aplaste al resto
+
+    barras = alt.Chart(comp).mark_bar(size=30, cornerRadiusEnd=3).encode(
+        y=alt.Y("Sucursal:N", title=None, sort="-x",
+                axis=alt.Axis(labelFontSize=12)),
+        x=alt.X("Cobertura:Q", title="Semanas de cobertura",
+                scale=alt.Scale(domainMin=0)),
+        color=alt.Color("Estado:N", scale=alt.Scale(
+            domain=["Olvido", "Riesgo de quiebre", "Sobre-pedido",
+                    "Dato incompleto", "Justo", "OK"],
+            range=[COLOR["OLVIDO"], COLOR["QUIEBRE"], COLOR["EXCESO"],
+                   COLOR["SIN_CATALOGO"], COLOR["AJUSTADO"], "#3E7A4E"]),
+            legend=alt.Legend(orient="top", title=None, direction="horizontal")),
+        opacity=alt.condition(alt.datum.Sucursal == sucursal_activa,
+                              alt.value(1.0), alt.value(0.45)),
+        tooltip=[alt.Tooltip("Sucursal:N"), alt.Tooltip("real:Q", title="Cobertura", format=",.2f"),
+                 alt.Tooltip("Estado:N")],
+    )
+    etiq = alt.Chart(comp).mark_text(dx=6, align="left", fontSize=11,
+                                     color="#9AA3AB").encode(
+        y=alt.Y("Sucursal:N", sort="-x"), x="Cobertura:Q",
+        text=alt.Text("real:Q", format=",.2f"))
+
+    bandas = alt.Chart(pd.DataFrame({"x": [0.90, 1.25]})).mark_rule(
+        strokeDash=[4, 4], color="#7A7A7A", size=1).encode(x="x:Q")
+
+    st.altair_chart((barras + etiq + bandas).properties(height=max(130, 42 * len(comp))),
+                    width="stretch")
+    st.caption("Cobertura = semanas que alcanza el stock mas el pedido. "
+               "Las lineas marcan el rango sano (0.90 a 1.25). La sucursal "
+               "seleccionada va resaltada; las demas, atenuadas.")
+
+
+ESCALA_ESTADO = alt.Scale(
+    domain=["Olvido", "Riesgo de quiebre", "Sobre-pedido", "Dato incompleto",
+            "Justo", "OK"],
+    range=[COLOR["OLVIDO"], COLOR["QUIEBRE"], COLOR["EXCESO"],
+           COLOR["SIN_CATALOGO"], COLOR["AJUSTADO"], "#2F5D45"])
+
+
+def mapa_calor(df):
+    """Toda la red en una sola vista: ingredientes x sucursales.
+
+    Cada celda es una linea de orden. El numero es la correccion sugerida en
+    formatos, que es la unidad en la que la gerente realmente decide.
+    """
+    m = df.dropna(subset=["nombre"]).copy()
+    m["Estado"] = m.estado.map(ETIQUETA).fillna("OK")
+    m["Ajuste"] = (m.formatos_sugeridos - m.pedido_formatos).fillna(0)
+    m["texto"] = m.Ajuste.apply(lambda v: f"{v:+.0f}" if abs(v) >= 1 else "")
+    m["Cob"] = m.cobertura.round(2)
+
+    # Los ingredientes con problemas suben al tope de la matriz.
+    orden_ing = (m.groupby("nombre").severidad.max()
+                  .sort_values(ascending=False).index.tolist())
+
+    base = alt.Chart(m).encode(
+        x=alt.X("sucursal:N", title=None,
+                axis=alt.Axis(labelAngle=0, orient="top", labelFontSize=12,
+                              labelPadding=8)),
+        y=alt.Y("nombre:N", title=None, sort=orden_ing,
+                axis=alt.Axis(labelFontSize=11, labelPadding=6)),
+    )
+    celdas = base.mark_rect(stroke="#0E1117", strokeWidth=3, cornerRadius=3).encode(
+        color=alt.Color("Estado:N", scale=ESCALA_ESTADO,
+                        legend=alt.Legend(orient="bottom", title=None,
+                                          direction="horizontal", columns=6)),
+        tooltip=[alt.Tooltip("sucursal:N", title="Sucursal"),
+                 alt.Tooltip("nombre:N", title="Ingrediente"),
+                 alt.Tooltip("Estado:N"),
+                 alt.Tooltip("pedido_formatos:Q", title="Pide", format=",.0f"),
+                 alt.Tooltip("formatos_sugeridos:Q", title="Sugerido", format=",.0f"),
+                 alt.Tooltip("Cob:Q", title="Cobertura (sem)")],
+    )
+    numeros = base.mark_text(fontSize=11, fontWeight="bold", color="#FFFFFF").encode(
+        text="texto:N")
+
+    st.altair_chart((celdas + numeros).properties(
+        height=max(320, 26 * m.nombre.nunique())), width="stretch")
+    st.caption("Cada celda es una linea de la orden. El numero es el ajuste "
+               "sugerido en formatos: +7 significa pedir 7 mas, -18 pedir 18 menos. "
+               "Las celdas en blanco ya estan bien.")
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +260,17 @@ sensibilidad = st.sidebar.slider(
     "Sensibilidad a semanas atipicas", 2.0, 6.0, 3.5, 0.5,
     help="Mas bajo = descarta mas semanas raras del historico.")
 
-df = motor.construir_analisis(datos, sensibilidad=sensibilidad, colchon=colchon)
+df_total = motor.construir_analisis(datos, sensibilidad=sensibilidad, colchon=colchon)
+
+# Filtro global. Se lee antes de dibujar nada para que la cabecera, el
+# panorama y las alertas respondan todos al mismo foco.
+if "foco" not in st.session_state:
+    st.session_state.foco = None
+if st.session_state.foco not in list(df_total.sucursal.unique()) + [None]:
+    st.session_state.foco = None          # la sucursal ya no existe tras cargar otro CSV
+
+foco = st.session_state.foco
+df = df_total if foco is None else df_total[df_total.sucursal == foco]
 alertas = motor.generar_alertas(df)
 res = motor.resumen(df)
 
@@ -170,8 +280,12 @@ res = motor.resumen(df)
 # ---------------------------------------------------------------------------
 
 st.title("Revision de ordenes de compra")
-st.caption(f"{df.sucursal.nunique()} sucursales · {df.ingrediente_id.nunique()} ingredientes · "
-           f"{res['lineas']} lineas revisadas")
+if foco:
+    st.caption(f"Viendo solo **{foco}** · {res['lineas']} lineas · "
+               f"pulsa la sucursal de nuevo para ver toda la red")
+else:
+    st.caption(f"{df.sucursal.nunique()} sucursales · {df.ingrediente_id.nunique()} ingredientes · "
+               f"{res['lineas']} lineas revisadas")
 
 c = st.columns(5)
 c[0].metric("Alertas activas", res["alertas"])
@@ -184,26 +298,73 @@ st.divider()
 
 
 # ---------------------------------------------------------------------------
-# Semaforo por sucursal
+# Semaforo por sucursal — cada uno filtra todo el tablero
 # ---------------------------------------------------------------------------
 
-graves = ["OLVIDO", "QUIEBRE", "SIN_CATALOGO"]
-cols = st.columns(df.sucursal.nunique())
-for col, suc in zip(cols, sorted(df.sucursal.unique())):
-    sub = df[df.sucursal == suc]
-    n_grave = int(sub.estado.isin(graves).sum())
-    n_exceso = int((sub.estado == "EXCESO").sum())
+GRAVES = ["OLVIDO", "QUIEBRE", "SIN_CATALOGO"]
+cols = st.columns(df_total.sucursal.nunique())
+for col, suc in zip(cols, sorted(df_total.sucursal.unique())):
+    s = df_total[df_total.sucursal == suc]
+    n_grave = int(s.estado.isin(GRAVES).sum())
+    n_exceso = int((s.estado == "EXCESO").sum())
     if n_grave:
-        icono, texto = "🔴", f"{n_grave} criticas"
+        icono, texto = "🔴", f"{n_grave} critica" + ("s" if n_grave > 1 else "")
     elif n_exceso:
-        icono, texto = "🟡", f"{n_exceso} de sobre-pedido"
+        icono, texto = "🟡", f"{n_exceso} sobre-pedido" + ("s" if n_exceso > 1 else "")
     else:
         icono, texto = "🟢", "sin alertas"
-    col.markdown(f"**{icono} {suc}**  \n{texto}")
+    activo = (foco == suc)
+    if col.button(f"{icono}  **{suc}** — {texto}", key=f"sem_{suc}",
+                  width="stretch", type="primary" if activo else "secondary"):
+        # Volver a pulsar la sucursal activa quita el filtro.
+        st.session_state.foco = None if activo else suc
+        st.rerun()
 
 st.divider()
 
-tab1, tab2, tab3 = st.tabs(["Alertas", "Detalle por sucursal", "Orden corregida"])
+tab0, tab1, tab2, tab3 = st.tabs(
+    ["Panorama", "Alertas", "Detalle por sucursal", "Orden corregida"])
+
+
+# ---------------------------------------------------------------------------
+# Tab 0 — Panorama de toda la red
+# ---------------------------------------------------------------------------
+
+with tab0:
+    p1, p2 = st.columns([2.2, 1])
+    with p1:
+        mapa_calor(df)
+    with p2:
+        st.markdown("##### Donde duele mas")
+        rank = (df[df.estado.isin(GRAVES + ["EXCESO"])]
+                .groupby("sucursal")
+                .agg(alertas=("estado", "size"),
+                     gravedad=("severidad", "max"))
+                .sort_values(["gravedad", "alertas"], ascending=False)
+                .reset_index())
+        if rank.empty:
+            st.success("Ninguna sucursal presenta desviaciones.")
+        else:
+            for r in rank.itertuples():
+                st.markdown(f"**{r.sucursal}** — {r.alertas} alertas")
+                st.progress(min(r.gravedad / 100, 1.0))
+
+        st.markdown("##### Impacto por proveedor")
+        imp = (df.dropna(subset=["proveedor"])
+                 .assign(ajuste=lambda d: (d.formatos_sugeridos - d.pedido_formatos).abs())
+                 .groupby("proveedor").ajuste.sum()
+                 .sort_values(ascending=False).head(5).reset_index())
+        imp = imp[imp.ajuste > 0]
+        if imp.empty:
+            st.caption("Sin correcciones pendientes.")
+        else:
+            st.altair_chart(
+                alt.Chart(imp).mark_bar(cornerRadiusEnd=3, color=AZUL).encode(
+                    y=alt.Y("proveedor:N", title=None, sort="-x",
+                            axis=alt.Axis(labelFontSize=11)),
+                    x=alt.X("ajuste:Q", title="Formatos a corregir"),
+                    tooltip=["proveedor:N", "ajuste:Q"],
+                ).properties(height=max(120, 34 * len(imp))), width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -253,23 +414,11 @@ with tab1:
 # ---------------------------------------------------------------------------
 
 with tab2:
-    suc = st.selectbox("Sucursal", sorted(df.sucursal.unique()))
+    # Los dos filtros viven juntos, arriba del contenido que controlan.
+    # Antes la sucursal estaba al tope de la pestana y obligaba a subir cada vez.
+    fc1, fc2 = st.columns([1, 1.4])
+    suc = fc1.selectbox("Sucursal", sorted(df.sucursal.unique()))
     sub = df[df.sucursal == suc].copy()
-
-    tabla = sub[["nombre", "ingrediente_id", "consumo_proyectado", "promedio_simple",
-                 "stock", "necesidad_ub", "pedido_formatos", "formatos_sugeridos",
-                 "cobertura", "estado", "formato_compra", "proveedor"]]
-    tabla.columns = ["Ingrediente", "ID", "Proyectado", "Prom. simple", "Stock",
-                     "Necesidad", "Pide", "Sugerido", "Cobertura (sem)", "Estado",
-                     "Formato", "Proveedor"]
-    st.dataframe(
-        tabla.sort_values("Estado").style.format({
-            "Proyectado": "{:,.1f}", "Prom. simple": "{:,.1f}", "Stock": "{:,.1f}",
-            "Necesidad": "{:,.1f}", "Pide": "{:,.0f}", "Sugerido": "{:,.0f}",
-            "Cobertura (sem)": "{:,.2f}"}),
-        width="stretch", hide_index=True)
-
-    st.subheader("Historico y proyeccion")
 
     # El desplegable arranca por el ingrediente mas problematico de la sucursal:
     # abrir la pestana en un caso plano no le dice nada a quien aprueba ordenes.
@@ -279,12 +428,49 @@ with tab2:
         f"{'●  ' if r.estado in ETIQUETA and r.estado != 'AJUSTADO' else ''}{r.nombre}"
         for r in opciones.itertuples()]
     mapa_sel = dict(zip(etiquetas_sel, opciones.nombre))
-    elegido = mapa_sel[st.selectbox("Ingrediente", etiquetas_sel)]
+    elegido = mapa_sel[fc2.selectbox("Ingrediente  (● = tiene alerta)", etiquetas_sel)]
     fila = opciones[opciones.nombre == elegido].iloc[0]
     hist = fila.historico if isinstance(fila.historico, list) else []
 
+    # Ficha del ingrediente: los numeros que sostienen la decision, sin tener
+    # que buscarlos en la tabla.
+    u = fila.unidad_base
+    dif = int(fila.formatos_sugeridos - fila.pedido_formatos)
+    k = st.columns(5)
+    k[0].metric("Proyeccion", f"{fila.consumo_proyectado:,.1f} {u}",
+                f"{fila.consumo_proyectado - fila.promedio_simple:+,.1f} vs prom. simple",
+                delta_color="off")
+    k[1].metric("Stock actual", f"{fila.stock:,.1f} {u}")
+    k[2].metric("Pide", f"{fila.pedido_formatos:,.0f}", help=fila.formato_compra)
+    k[3].metric("Sugerido", f"{fila.formatos_sugeridos:,.0f}",
+                f"{dif:+d} formatos" if dif else "sin cambio",
+                delta_color="inverse" if dif else "off")
+    k[4].metric("Cobertura", f"{fila.cobertura:,.2f} sem" if pd.notna(fila.cobertura) else "—",
+                ETIQUETA.get(fila.estado, "OK"), delta_color="off")
+
     if hist:
         grafico_serie(fila, hist)
+
+    # Siempre contra la red completa: comparar contra un subconjunto filtrado
+    # vaciaria el grafico justo cuando hay un foco activo.
+    st.markdown(f"##### {elegido} en las demas sucursales")
+    grafico_comparativo(df_total, fila.ingrediente_id, suc)
+
+    # La tabla completa pasa al final y colapsada: es material de consulta,
+    # no lo primero que uno necesita ver.
+    with st.expander(f"Ver tabla completa de {suc}  ({len(sub)} lineas)"):
+        tabla = sub[["nombre", "ingrediente_id", "consumo_proyectado", "promedio_simple",
+                     "stock", "necesidad_ub", "pedido_formatos", "formatos_sugeridos",
+                     "cobertura", "estado", "formato_compra", "proveedor"]]
+        tabla.columns = ["Ingrediente", "ID", "Proyectado", "Prom. simple", "Stock",
+                         "Necesidad", "Pide", "Sugerido", "Cobertura (sem)", "Estado",
+                         "Formato", "Proveedor"]
+        st.dataframe(
+            tabla.sort_values("Estado").style.format({
+                "Proyectado": "{:,.1f}", "Prom. simple": "{:,.1f}", "Stock": "{:,.1f}",
+                "Necesidad": "{:,.1f}", "Pide": "{:,.0f}", "Sugerido": "{:,.0f}",
+                "Cobertura (sem)": "{:,.2f}"}),
+            width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------------------------
