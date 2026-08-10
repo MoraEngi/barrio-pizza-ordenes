@@ -1,14 +1,14 @@
 """
-Motor de revision de ordenes de compra - Barrio Pizza
+Motor de revisión de órdenes de compra - Barrio Pizza
 =====================================================
-Logica de negocio pura. No depende de Streamlit ni de ninguna interfaz.
-Puede reutilizarse desde una API, un job programado o un modulo de Odoo.
+Lógica de negocio pura. No depende de Streamlit ni de ninguna interfaz.
+Puede reutilizarse desde una API, un job programado o un módulo de Odoo.
 
 Flujo:
   1. cargar_datos()      -> lee los CSV y normaliza
-  2. proyectar_consumo() -> estima el consumo de la proxima semana
-  3. construir_analisis()-> cruza proyeccion + inventario + orden
-  4. generar_alertas()   -> traduce numeros a alertas accionables
+  2. proyectar_consumo() -> estima el consumo de la próxima semana
+  3. construir_analisis()-> cruza proyección + inventario + orden
+  4. generar_alertas()   -> traduce números a alertas accionables
 """
 
 from pathlib import Path
@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
-# Parametros de negocio (ajustables desde la interfaz)
+# Parámetros de negocio (ajustables desde la interfaz)
 # ---------------------------------------------------------------------------
 
 UMBRAL_QUIEBRE = 0.90      # cobertura < 0.90 semanas -> riesgo de quiebre
@@ -25,8 +25,8 @@ UMBRAL_AJUSTADO = 1.00     # entre 0.90 y 1.00 -> justo, vigilar
 UMBRAL_EXCESO = 1.25       # cobertura > 1.25 semanas -> sobre-pedido
 UMBRAL_EXCESO_PERECEDERO = 1.15   # los perecederos toleran menos excedente
 
-SENSIBILIDAD_OUTLIER = 3.5  # cuantas desviaciones robustas para marcar atipico
-TOPE_CRECIMIENTO = 1.30     # la proyeccion no puede superar 130% del promedio limpio
+SENSIBILIDAD_OUTLIER = 3.5  # cuántas desviaciones robustas para marcar atípico
+TOPE_CRECIMIENTO = 1.30     # la proyección no puede superar 130% del promedio limpio
 PISO_CAIDA = 0.80           # ni bajar de 80%
 
 
@@ -37,8 +37,8 @@ PISO_CAIDA = 0.80           # ni bajar de 80%
 def cargar_datos(carpeta=None):
     """Lee los 4 CSV. utf-8-sig limpia el BOM que traen los archivos.
 
-    La ruta se resuelve contra la ubicacion de este archivo, no contra el
-    directorio de trabajo. Asi funciona igual en local y en Streamlit Cloud,
+    La ruta se resuelve contra la ubicación de este archivo, no contra el
+    directorio de trabajo. Así funciona igual en local y en Streamlit Cloud,
     sin importar desde donde se lance el proceso.
     """
     base = Path(carpeta) if carpeta else Path(__file__).resolve().parent / "datos"
@@ -52,23 +52,23 @@ def cargar_datos(carpeta=None):
 
 
 # ---------------------------------------------------------------------------
-# 2. Proyeccion del consumo
+# 2. Proyección del consumo
 # ---------------------------------------------------------------------------
 
 def _proyectar_serie(valores, sensibilidad=SENSIBILIDAD_OUTLIER):
     """
-    Proyecta la proxima semana a partir del historico de una serie.
+    Proyecta la próxima semana a partir del histórico de una serie.
 
     Estrategia en tres pasos:
-      a) Detecta semanas atipicas con MAD (mediana de desviaciones absolutas).
+      a) Detecta semanas atípicas con MAD (mediana de desviaciones absolutas).
          Es robusto: un solo valor extremo no mueve la mediana, a diferencia
          del promedio. Caso real del dataset: Marbella pepperoni S3 = 150 kg
-         cuando el resto ronda 30. Un promedio simple proyectaria 50 kg.
-      b) Sobre las semanas limpias ajusta una regresion lineal para capturar
+         cuando el resto ronda 30. Un promedio simple proyectaría 50 kg.
+      b) Sobre las semanas limpias ajusta una regresión lineal para capturar
          tendencia. Caso real: Costa del Este harina crece 240 -> 316 kg.
-      c) Acota el resultado para que la extrapolacion no se dispare.
+      c) Acota el resultado para que la extrapolación no se dispare.
 
-    Devuelve: (proyeccion, semanas_atipicas, tendencia_pct)
+    Devuelve: (proyección, semanas_atipicas, tendencia_pct)
     """
     v = np.asarray(valores, dtype=float)
     v = v[~np.isnan(v)]
@@ -77,7 +77,7 @@ def _proyectar_serie(valores, sensibilidad=SENSIBILIDAD_OUTLIER):
     if len(v) == 1:
         return float(v[0]), [], 0.0
 
-    # (a) deteccion robusta de atipicos
+    # (a) detección robusta de atípicos
     mediana = np.median(v)
     mad = np.median(np.abs(v - mediana))
     escala = mad * 1.4826 if mad > 0 else mediana * 0.20
@@ -105,7 +105,7 @@ def _proyectar_serie(valores, sensibilidad=SENSIBILIDAD_OUTLIER):
 
 
 def proyectar_consumo(consumo, sensibilidad=SENSIBILIDAD_OUTLIER):
-    """Aplica la proyeccion a cada par (sucursal, ingrediente)."""
+    """Aplica la proyección a cada par (sucursal, ingrediente)."""
     tabla = consumo.pivot_table(
         index=["sucursal", "ingrediente_id"],
         columns="semana",
@@ -130,17 +130,17 @@ def proyectar_consumo(consumo, sensibilidad=SENSIBILIDAD_OUTLIER):
 
 
 # ---------------------------------------------------------------------------
-# 3. Analisis: cruzar proyeccion, inventario y orden
+# 3. Análisis: cruzar proyección, inventario y orden
 # ---------------------------------------------------------------------------
 
 def construir_analisis(datos, sensibilidad=SENSIBILIDAD_OUTLIER, colchon=0.0):
     """
-    Une todo en una sola tabla. Usa merges de tipo 'outer' a proposito:
-    si un ingrediente esta en el catalogo pero no en la orden, la fila debe
-    sobrevivir (asi detectamos olvidos). Si esta en la orden pero no en el
-    catalogo, tambien (asi detectamos productos desconocidos).
+    Une todo en una sola tabla. Usa merges de tipo 'outer' a propósito:
+    si un ingrediente está en el catálogo pero no en la orden, la fila debe
+    sobrevivir (así detectamos olvidos). Si está en la orden pero no en el
+    catálogo, también (así detectamos productos desconocidos).
 
-    colchon: margen de seguridad sobre el consumo proyectado (0.10 = 10% extra).
+    colchón: margen de seguridad sobre el consumo proyectado (0.10 = 10% extra).
     """
     ing = datos["ingredientes"]
     proy = proyectar_consumo(datos["consumo"], sensibilidad)
@@ -161,7 +161,7 @@ def construir_analisis(datos, sensibilidad=SENSIBILIDAD_OUTLIER, colchon=0.0):
           .merge(datos["orden"], on=["sucursal", "ingrediente_id"], how="left")
           .merge(ing, on="ingrediente_id", how="left"))
 
-    # Un par sin historico, sin stock y sin pedido no aporta nada: se descarta
+    # Un par sin histórico, sin stock y sin pedido no aporta nada: se descarta
     relevante = (df.consumo_proyectado.notna() |
                  df.stock_actual_unidad_base.notna() |
                  df.cantidad_formatos.notna())
@@ -172,7 +172,7 @@ def construir_analisis(datos, sensibilidad=SENSIBILIDAD_OUTLIER, colchon=0.0):
     df["stock"] = df.stock_actual_unidad_base.fillna(0)
     df["consumo_proyectado"] = df.consumo_proyectado.fillna(0)
 
-    # Conversion de formatos a unidad base: el corazon del reto
+    # Conversión de formatos a unidad base: el corazón del reto
     df["pedido_ub"] = df.pedido_formatos * df.unidad_base_por_formato
 
     df["demanda"] = df.consumo_proyectado * (1 + colchon)
@@ -181,8 +181,8 @@ def construir_analisis(datos, sensibilidad=SENSIBILIDAD_OUTLIER, colchon=0.0):
     df["diferencia_formatos"] = df.pedido_formatos - df.formatos_sugeridos
     df["disponible_ub"] = df.stock + df.pedido_ub
 
-    # Cobertura = cuantas semanas de consumo cubre lo que va a tener en mano.
-    # Es la metrica central: intuitiva para quien aprueba las ordenes.
+    # Cobertura = cuántas semanas de consumo cubre lo que va a tener en mano.
+    # Es la métrica central: intuitiva para quien aprueba las órdenes.
     df["cobertura"] = np.where(df.demanda > 0, df.disponible_ub / df.demanda, np.nan)
 
     df["faltante_ub"] = (df.necesidad_ub - df.pedido_ub).clip(lower=0)
@@ -195,7 +195,7 @@ def construir_analisis(datos, sensibilidad=SENSIBILIDAD_OUTLIER, colchon=0.0):
 
 
 def _clasificar(r):
-    """Traduce los numeros a un estado de negocio."""
+    """Traduce los números a un estado de negocio."""
     if not r.en_catalogo:
         return "SIN_CATALOGO"
 
@@ -249,21 +249,21 @@ def _fmt(x, dec=1):
 
 
 def generar_alertas(df):
-    """Convierte las filas problematicas en mensajes accionables."""
+    """Convierte las filas problemáticas en mensajes accionables."""
     alertas = []
     for _, r in df[df.estado != "OK"].iterrows():
         nombre = r.nombre if pd.notna(r.nombre) else r.ingrediente_id
         unidad = r.unidad_base if pd.notna(r.unidad_base) else "und"
 
         if r.estado == "SIN_CATALOGO":
-            titulo = (f"{r.sucursal} pidio {int(r.pedido_formatos)} formatos de "
-                      f"'{r.ingrediente_id}', que no existe en el catalogo")
-            detalle = "Sin proveedor ni factor de conversion. No se puede validar ni cotizar."
-            accion = "Dar de alta el ingrediente o corregir el codigo en la orden."
+            titulo = (f"{r.sucursal} pidió {int(r.pedido_formatos)} formatos de "
+                      f"'{r.ingrediente_id}', que no existe en el catálogo")
+            detalle = "Sin proveedor ni factor de conversión. No se puede validar ni cotizar."
+            accion = "Dar de alta el ingrediente o corregir el código en la orden."
 
         elif r.estado == "OLVIDO":
-            titulo = f"{r.sucursal} NO pidio {nombre}"
-            detalle = (f"Proyeccion {_fmt(r.consumo_proyectado)} {unidad} contra un stock de "
+            titulo = f"{r.sucursal} NO pidió {nombre}"
+            detalle = (f"Proyección {_fmt(r.consumo_proyectado)} {unidad} contra un stock de "
                        f"{_fmt(r.stock)} {unidad}. Cubre {_fmt(r.cobertura, 2)} semanas.")
             accion = f"Agregar {int(r.formatos_sugeridos)} x {r.formato_compra}."
 
@@ -275,7 +275,7 @@ def generar_alertas(df):
             accion = f"Subir a {int(r.formatos_sugeridos)} formatos (+{int(-r.diferencia_formatos)})."
 
         elif r.estado == "EXCESO":
-            titulo = (f"{r.sucursal} pide {_fmt(r.excedente_ub)} {unidad} de mas "
+            titulo = (f"{r.sucursal} pide {_fmt(r.excedente_ub)} {unidad} de más "
                       f"de {nombre}")
             detalle = (f"Pide {int(r.pedido_formatos)} y necesita {int(r.formatos_sugeridos)} "
                        f"x {r.formato_compra}. Cubre {_fmt(r.cobertura, 2)} semanas.")
@@ -313,7 +313,7 @@ def generar_alertas(df):
 # ---------------------------------------------------------------------------
 
 def orden_corregida(df):
-    """Version sugerida de la orden, agrupable por proveedor."""
+    """Versión sugerida de la orden, agrupable por proveedor."""
     cols = ["sucursal", "proveedor", "ingrediente_id", "nombre", "formato_compra",
             "pedido_formatos", "formatos_sugeridos", "diferencia_formatos", "estado"]
     out = df[df.en_catalogo][cols].copy()
@@ -324,7 +324,7 @@ def orden_corregida(df):
 
 
 def resumen(df):
-    """Numeros de cabecera para el dashboard."""
+    """Números de cabecera para el dashboard."""
     d = df[df.estado != "OK"]
     return {
         "alertas": int(len(d)),
