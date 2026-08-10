@@ -404,8 +404,12 @@ with tab1:
         st.success("Ninguna orden presenta desviaciones. Todo listo para aprobar.")
     else:
         izq, der = st.columns([3, 1])
-        f_suc = der.multiselect("Sucursal", sorted(alertas.sucursal.unique()))
-        f_est = der.multiselect("Tipo", [ETIQUETA[e] for e in alertas.estado.unique()])
+        # Mismos keys atados al foco: al filtrar desde el semaforo cambian las
+        # opciones y una seleccion vieja quedaria fuera de la lista.
+        f_suc = der.multiselect("Sucursal", sorted(alertas.sucursal.unique()),
+                                key=f"fsuc_{foco}")
+        f_est = der.multiselect("Tipo", sorted({ETIQUETA[e] for e in alertas.estado}),
+                                key=f"fest_{foco}")
         ver_justos = der.checkbox("Mostrar casos 'justos'", value=False)
 
         vista = alertas.copy()
@@ -445,7 +449,16 @@ with tab2:
     # Los dos filtros viven juntos, arriba del contenido que controlan.
     # Antes la sucursal estaba al tope de la pestana y obligaba a subir cada vez.
     fc1, fc2 = st.columns([1, 1.4])
-    suc = fc1.selectbox("Sucursal", sorted(df.sucursal.unique()))
+    if foco:
+        # Con el filtro global activo no tiene sentido un segundo selector de
+        # sucursal: quedaria con una sola opcion y Streamlit conserva el valor
+        # anterior, que ya no esta en la lista, dejando el campo en rojo.
+        suc = foco
+        fc1.markdown("Sucursal")
+        fc1.markdown(f"### {foco}")
+        fc1.caption("Filtro activo desde el semaforo")
+    else:
+        suc = fc1.selectbox("Sucursal", sorted(df.sucursal.unique()))
     sub = df[df.sucursal == suc].copy()
 
     # El desplegable arranca por el ingrediente mas problematico de la sucursal:
@@ -456,7 +469,10 @@ with tab2:
         f"{'●  ' if r.estado in ETIQUETA and r.estado != 'AJUSTADO' else ''}{r.nombre}"
         for r in opciones.itertuples()]
     mapa_sel = dict(zip(etiquetas_sel, opciones.nombre))
-    elegido = mapa_sel[fc2.selectbox("Ingrediente  (● = tiene alerta)", etiquetas_sel)]
+    # key atado a la sucursal: al cambiarla la lista de ingredientes cambia y
+    # sin esto Streamlit intenta conservar una seleccion que ya no existe.
+    elegido = mapa_sel[fc2.selectbox("Ingrediente  (● = tiene alerta)",
+                                     etiquetas_sel, key=f"ing_{suc}")]
     fila = opciones[opciones.nombre == elegido].iloc[0]
     hist = fila.historico if isinstance(fila.historico, list) else []
 
