@@ -165,7 +165,8 @@ def grafico_comparativo(df, ingrediente_id, sucursal_activa):
                         f"de las {tipica:,.2f} tipicas en las demas sucursales.")
 
     eje_y = alt.Y("Sucursal:N", title=None, sort=orden_y,
-                  axis=alt.Axis(labelFontSize=12, labelLimit=180))
+                  axis=alt.Axis(labelFontSize=12, labelLimit=180,
+                                labelOverlap=False))
 
     barras = alt.Chart(comp).mark_bar(cornerRadiusEnd=3, height=24).encode(
         y=eje_y,
@@ -218,9 +219,10 @@ def mapa_calor(df):
     base = alt.Chart(m).encode(
         x=alt.X("sucursal:N", title=None,
                 axis=alt.Axis(labelAngle=0, orient="top", labelFontSize=12,
-                              labelPadding=8)),
+                              labelPadding=8, labelOverlap=False)),
         y=alt.Y("nombre:N", title=None, sort=orden_ing,
-                axis=alt.Axis(labelFontSize=11, labelPadding=6)),
+                axis=alt.Axis(labelFontSize=11, labelPadding=6,
+                              labelOverlap=False)),
     )
     celdas = base.mark_rect(stroke="#0E1117", strokeWidth=3, cornerRadius=3).encode(
         color=alt.Color("Estado:N", scale=ESCALA_ESTADO,
@@ -378,13 +380,19 @@ with tab0:
         if imp.empty:
             st.caption("Sin correcciones pendientes.")
         else:
+            # labelOverlap=False obliga a Vega a dibujar las etiquetas de todas
+            # las barras; por defecto borra las que cree que se solapan y quedan
+            # barras anonimas. La altura se calcula para que quepan de verdad.
+            orden_prov = imp.proveedor.tolist()
             st.altair_chart(
-                alt.Chart(imp).mark_bar(cornerRadiusEnd=3, color=AZUL).encode(
-                    y=alt.Y("proveedor:N", title=None, sort="-x",
-                            axis=alt.Axis(labelFontSize=11)),
+                alt.Chart(imp).mark_bar(cornerRadiusEnd=3, color=AZUL, height=20).encode(
+                    y=alt.Y("proveedor:N", title=None, sort=orden_prov,
+                            axis=alt.Axis(labelFontSize=11, labelOverlap=False,
+                                          labelLimit=150, labelPadding=6)),
                     x=alt.X("ajuste:Q", title="Formatos a corregir"),
-                    tooltip=["proveedor:N", "ajuste:Q"],
-                ).properties(height=max(120, 34 * len(imp))), width="stretch")
+                    tooltip=[alt.Tooltip("proveedor:N", title="Proveedor"),
+                             alt.Tooltip("ajuste:Q", title="Formatos", format=",.0f")],
+                ).properties(height=38 * len(imp) + 60), width="stretch")
 
 
 # ---------------------------------------------------------------------------
