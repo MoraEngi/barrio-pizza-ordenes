@@ -11,6 +11,8 @@ Flujo:
   4. generar_alertas()   -> traduce numeros a alertas accionables
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -32,9 +34,15 @@ PISO_CAIDA = 0.80           # ni bajar de 80%
 # 1. Carga de datos
 # ---------------------------------------------------------------------------
 
-def cargar_datos(carpeta="datos"):
-    """Lee los 4 CSV. utf-8-sig limpia el BOM que traen los archivos."""
-    leer = lambda n: pd.read_csv(f"{carpeta}/{n}", encoding="utf-8-sig")
+def cargar_datos(carpeta=None):
+    """Lee los 4 CSV. utf-8-sig limpia el BOM que traen los archivos.
+
+    La ruta se resuelve contra la ubicacion de este archivo, no contra el
+    directorio de trabajo. Asi funciona igual en local y en Streamlit Cloud,
+    sin importar desde donde se lance el proceso.
+    """
+    base = Path(carpeta) if carpeta else Path(__file__).resolve().parent / "datos"
+    leer = lambda n: pd.read_csv(base / n, encoding="utf-8-sig")
     return {
         "ingredientes": leer("ingredientes.csv"),
         "consumo": leer("consumo_historico.csv"),
