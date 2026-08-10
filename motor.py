@@ -104,8 +104,15 @@ def _proyectar_serie(valores, sensibilidad=SENSIBILIDAD_OUTLIER):
     return proyeccion, atipicos, float(tendencia)
 
 
-def proyectar_consumo(consumo, sensibilidad=SENSIBILIDAD_OUTLIER):
-    """Aplica la proyección a cada par (sucursal, ingrediente)."""
+def proyectar_consumo(consumo, sensibilidad=SENSIBILIDAD_OUTLIER, modo="robusto"):
+    """Aplica la proyección a cada par (sucursal, ingrediente).
+
+    modo="robusto"  -> MAD para descartar atípicos + tendencia lineal.
+    modo="promedio" -> promedio simple de las 6 semanas, sin filtrar nada.
+
+    El modo "promedio" existe para poder contrastar los dos métodos desde la
+    interfaz. No es un fallback: es el metodo ingenuo que se esta reemplazando.
+    """
     tabla = consumo.pivot_table(
         index=["sucursal", "ingrediente_id"],
         columns="semana",
@@ -116,12 +123,16 @@ def proyectar_consumo(consumo, sensibilidad=SENSIBILIDAD_OUTLIER):
 
     filas = []
     for (suc, ing), serie in tabla.iterrows():
-        proy, atipicos, tend = _proyectar_serie(serie.values, sensibilidad)
+        prom = float(np.nanmean(serie.values))
+        if modo == "promedio":
+            proy, atipicos, tend = prom, [], 0.0
+        else:
+            proy, atipicos, tend = _proyectar_serie(serie.values, sensibilidad)
         filas.append({
             "sucursal": suc,
             "ingrediente_id": ing,
             "consumo_proyectado": proy,
-            "promedio_simple": float(np.nanmean(serie.values)),
+            "promedio_simple": prom,
             "semanas_atipicas": ", ".join(semanas[i] for i in atipicos),
             "tendencia_pct": tend,
             "historico": list(serie.values),
@@ -133,7 +144,8 @@ def proyectar_consumo(consumo, sensibilidad=SENSIBILIDAD_OUTLIER):
 # 3. Análisis: cruzar proyección, inventario y orden
 # ---------------------------------------------------------------------------
 
-def construir_analisis(datos, sensibilidad=SENSIBILIDAD_OUTLIER, colchon=0.0):
+def construir_analisis(datos, sensibilidad=SENSIBILIDAD_OUTLIER, colchon=0.0,
+                       modo="robusto"):
     """
     Une todo en una sola tabla. Usa merges de tipo 'outer' a propósito:
     si un ingrediente está en el catálogo pero no en la orden, la fila debe
@@ -141,9 +153,10 @@ def construir_analisis(datos, sensibilidad=SENSIBILIDAD_OUTLIER, colchon=0.0):
     catálogo, también (así detectamos productos desconocidos).
 
     colchón: margen de seguridad sobre el consumo proyectado (0.10 = 10% extra).
+    modo: "robusto" o "promedio", ver proyectar_consumo().
     """
     ing = datos["ingredientes"]
-    proy = proyectar_consumo(datos["consumo"], sensibilidad)
+    proy = proyectar_consumo(datos["consumo"], sensibilidad, modo)
 
     # Universo completo: todo par sucursal x ingrediente que aparezca en cualquier fuente
     sucursales = sorted(set(datos["inventario"].sucursal) |

@@ -282,7 +282,18 @@ sensibilidad = st.sidebar.slider(
     "Sensibilidad a semanas atípicas", 2.0, 6.0, 3.5, 0.5,
     help="Más bajo = descarta más semanas raras del histórico.")
 
-df_total = motor.construir_analisis(datos, sensibilidad=sensibilidad, colchon=colchon)
+st.sidebar.subheader("Método de proyección")
+ingenuo = st.sidebar.toggle(
+    "Usar promedio simple",
+    help="Apaga la detección de semanas atípicas y la tendencia. Sirve para "
+         "comparar contra el método que se está reemplazando.")
+modo = "promedio" if ingenuo else "robusto"
+st.sidebar.caption("Promedio simple de las 6 semanas, sin filtrar nada."
+                   if ingenuo else
+                   "Descarta semanas atípicas y sigue la tendencia.")
+
+df_total = motor.construir_analisis(datos, sensibilidad=sensibilidad,
+                                    colchon=colchon, modo=modo)
 
 # Filtro global. Se lee antes de dibujar nada para que la cabecera, el
 # panorama y las alertas respondan todos al mismo foco.
@@ -308,6 +319,11 @@ if foco:
 else:
     st.caption(f"{df.sucursal.nunique()} sucursales · {df.ingrediente_id.nunique()} ingredientes · "
                f"{res['lineas']} líneas revisadas")
+
+if ingenuo:
+    st.warning("**Modo promedio simple activo.** Se apagaron la detección de "
+               "semanas atípicas y la tendencia. Las cifras de abajo son las que "
+               "daría el método que estamos reemplazando.", icon="⚠️")
 
 c = st.columns(5)
 c[0].metric("Alertas activas", res["alertas"])
