@@ -5,6 +5,7 @@ Interfaz Streamlit. Toda la logica de negocio vive en motor.py.
 
 import io
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -33,6 +34,93 @@ st.markdown("""
          border-radius:10px; color:#fff; margin-right:.4rem;}
 </style>
 """, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Grafico de serie historica
+# ---------------------------------------------------------------------------
+
+AZUL, GRIS, NARANJA = "#4C8DBF", "#8C8C8C", "#D97A29"
+
+
+def diagnostico_serie(fila, hist):
+    """Una linea en lenguaje llano que le da lectura al grafico.
+
+    Un grafico de barras plano es informacion valida, pero sin esta frase el
+    usuario no sabe si esta viendo estabilidad o un problema.
+    """
+    u = fila.unidad_base
+    limpio = [v for i, v in enumerate(hist)
+              if f"S{i+1}" != (fila.semanas_atipicas or "")]
+    base = sum(limpio) / len(limpio) if limpio else 0
+    disp = (max(limpio) - min(limpio)) / base if base and limpio else 0
+    tend = fila.tendencia_pct or 0
+
+    if fila.semanas_atipicas:
+        return ("⚠️", f"La semana {fila.semanas_atipicas} se salio del patron y se excluyo. "
+                f"Con promedio simple la proyeccion seria **{fila.promedio_simple:,.1f} {u}**; "
+                f"descartandola queda en **{fila.consumo_proyectado:,.1f} {u}**.")
+    if abs(tend) > 0.12:
+        rumbo = "creciendo" if tend > 0 else "cayendo"
+        return ("📈" if tend > 0 else "📉",
+                f"El consumo viene {rumbo} **{abs(tend)*100:.0f}%** en las 6 semanas. "
+                f"El promedio simple daria {fila.promedio_simple:,.1f} {u} y se quedaria corto: "
+                f"la proyeccion sigue la tendencia hasta **{fila.consumo_proyectado:,.1f} {u}**.")
+    if disp < 0.15:
+        return ("✅", f"Serie estable: varia menos de {max(disp,0.01)*100:.0f}% entre semanas. "
+                f"Se proyectan **{fila.consumo_proyectado:,.1f} {u}** con alta confianza.")
+    return ("〰️", f"Serie irregular (varia {disp*100:.0f}% entre semanas) pero sin un patron "
+            f"claro ni valores atipicos. Se proyectan **{fila.consumo_proyectado:,.1f} {u}**.")
+
+
+def grafico_serie(fila, hist):
+    """Barras cronologicas con la proyeccion destacada al final.
+
+    Se usa Altair en vez de st.bar_chart para poder controlar el orden, el
+    color por categoria, las etiquetas horizontales y la regla del promedio.
+    """
+    atipica = fila.semanas_atipicas or ""
+    filas = []
+    for i, v in enumerate(hist):
+        s = f"S{i+1}"
+        filas.append({"Semana": f"Sem {i+1}", "Consumo": float(v), "orden": i,
+                      "Tipo": "Semana descartada" if s == atipica else "Historico"})
+    filas.append({"Semana": "Proxima", "Consumo": float(fila.consumo_proyectado),
+                  "orden": len(hist), "Tipo": "Proyeccion"})
+    serie = pd.DataFrame(filas)
+
+    icono, texto = diagnostico_serie(fila, hist)
+    st.markdown(f"{icono} {texto}")
+
+    escala = alt.Scale(domain=["Historico", "Semana descartada", "Proyeccion"],
+                       range=[AZUL, GRIS, NARANJA])
+    eje_x = alt.X("Semana:N", sort=alt.SortField("orden"), title=None,
+                  axis=alt.Axis(labelAngle=0, labelFontSize=12))
+
+    barras = alt.Chart(serie).mark_bar(size=42, cornerRadiusTopLeft=3,
+                                       cornerRadiusTopRight=3).encode(
+        x=eje_x,
+        y=alt.Y("Consumo:Q", title=f"Consumo ({fila.unidad_base})",
+                axis=alt.Axis(labelFontSize=11)),
+        color=alt.Color("Tipo:N", scale=escala,
+                        legend=alt.Legend(orient="top", title=None, direction="horizontal")),
+        opacity=alt.condition(alt.datum.Tipo == "Semana descartada",
+                              alt.value(0.35), alt.value(1.0)),
+        tooltip=[alt.Tooltip("Semana:N"), alt.Tooltip("Consumo:Q", format=",.1f"),
+                 alt.Tooltip("Tipo:N")],
+    )
+
+    valores = alt.Chart(serie).mark_text(dy=-8, fontSize=11, color="#9AA3AB").encode(
+        x=eje_x, y="Consumo:Q", text=alt.Text("Consumo:Q", format=",.0f"))
+
+    prom = alt.Chart(pd.DataFrame({"y": [float(fila.promedio_simple)]})).mark_rule(
+        strokeDash=[5, 4], color="#B85C5C", size=1.5).encode(
+        y="y:Q", tooltip=alt.Tooltip("y:Q", title="Promedio simple", format=",.1f"))
+
+    st.altair_chart((barras + valores + prom).properties(height=330),
+                    width="stretch")
+    st.caption(f"Linea punteada = promedio simple ({fila.promedio_simple:,.1f} "
+               f"{fila.unidad_base}), el metodo que estamos reemplazando.")
 
 
 # ---------------------------------------------------------------------------
@@ -179,23 +267,24 @@ with tab2:
             "Proyectado": "{:,.1f}", "Prom. simple": "{:,.1f}", "Stock": "{:,.1f}",
             "Necesidad": "{:,.1f}", "Pide": "{:,.0f}", "Sugerido": "{:,.0f}",
             "Cobertura (sem)": "{:,.2f}"}),
-        use_container_width=True, hide_index=True)
+        width="stretch", hide_index=True)
 
     st.subheader("Historico y proyeccion")
-    opciones = sub.dropna(subset=["nombre"]).sort_values("nombre")
-    elegido = st.selectbox("Ingrediente", opciones.nombre.tolist())
+
+    # El desplegable arranca por el ingrediente mas problematico de la sucursal:
+    # abrir la pestana en un caso plano no le dice nada a quien aprueba ordenes.
+    opciones = (sub.dropna(subset=["nombre"])
+                   .sort_values(["severidad", "nombre"], ascending=[False, True]))
+    etiquetas_sel = [
+        f"{'●  ' if r.estado in ETIQUETA and r.estado != 'AJUSTADO' else ''}{r.nombre}"
+        for r in opciones.itertuples()]
+    mapa_sel = dict(zip(etiquetas_sel, opciones.nombre))
+    elegido = mapa_sel[st.selectbox("Ingrediente", etiquetas_sel)]
     fila = opciones[opciones.nombre == elegido].iloc[0]
     hist = fila.historico if isinstance(fila.historico, list) else []
+
     if hist:
-        serie = pd.DataFrame({
-            "Semana": [f"S{i+1}" for i in range(len(hist))] + ["Proyec."],
-            "Consumo": list(hist) + [fila.consumo_proyectado],
-        }).set_index("Semana")
-        st.bar_chart(serie)
-        if fila.semanas_atipicas:
-            st.info(f"La semana {fila.semanas_atipicas} se detecto como atipica y se excluyo. "
-                    f"El promedio simple daria {fila.promedio_simple:,.1f}; "
-                    f"la proyeccion robusta da {fila.consumo_proyectado:,.1f}.")
+        grafico_serie(fila, hist)
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +302,7 @@ with tab3:
         bloque = vista[vista.Proveedor == prov]
         with st.expander(f"{prov} — {len(bloque)} lineas", expanded=True):
             st.dataframe(bloque.drop(columns=["Proveedor"]),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
 
     buf = io.StringIO()
     corr.to_csv(buf, index=False)
